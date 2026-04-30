@@ -189,6 +189,8 @@ uint8_t TwoWire::requestFrom(uint8_t address, size_t quantity, bool stopBit)
 
   byteRead = rxBuffer._iHead = _p_twim->RXD.AMOUNT;
 
+  // stealth30110
+
   return byteRead;
 }
 
