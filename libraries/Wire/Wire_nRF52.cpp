@@ -37,6 +37,23 @@ static volatile uint32_t* pincfg_reg(uint32_t pin)
   return &port->PIN_CNF[pin];
 }
 
+static bool wait_for_twim_event(volatile uint32_t* event_reg, volatile uint32_t* error_reg, uint32_t timeout_ms)
+{
+  uint32_t const start_ms = millis();
+
+  while (!*event_reg && !*error_reg)
+  {
+    if ((millis() - start_ms) >= timeout_ms)
+    {
+      return false;
+    }
+
+    yield();
+  }
+
+  return true;
+}
+
 TwoWire::TwoWire(NRF_TWIM_Type * p_twim, NRF_TWIS_Type * p_twis, IRQn_Type IRQn, uint8_t pinSDA, uint8_t pinSCL)
 {
   this->_p_twim = p_twim;
@@ -153,43 +170,71 @@ uint8_t TwoWire::requestFrom(uint8_t address, size_t quantity, bool stopBit)
     return 0;
   }
 
+  size_t const max_read = sizeof(rxBuffer._aucBuffer);
+  size_t const read_len = min(quantity, max_read);
+  uint32_t const timeout_ms = 100;
   size_t byteRead = 0;
   rxBuffer.clear();
 
   _p_twim->ADDRESS = address;
 
+  // Reset sticky state from any previous transfer before arming a new one.
+  _p_twim->EVENTS_ERROR = 0x0UL;
+  _p_twim->EVENTS_RXSTARTED = 0x0UL;
+  _p_twim->EVENTS_LASTRX = 0x0UL;
+  _p_twim->EVENTS_STOPPED = 0x0UL;
+  _p_twim->EVENTS_SUSPENDED = 0x0UL;
+  _p_twim->ERRORSRC = _p_twim->ERRORSRC;
+
   _p_twim->TASKS_RESUME = 0x1UL;
   _p_twim->RXD.PTR = (uint32_t)rxBuffer._aucBuffer;
-  _p_twim->RXD.MAXCNT = quantity;
+  _p_twim->RXD.MAXCNT = read_len;
   _p_twim->TASKS_STARTRX = 0x1UL;
 
-  while(!_p_twim->EVENTS_RXSTARTED && !_p_twim->EVENTS_ERROR);
+  if (!wait_for_twim_event(&_p_twim->EVENTS_RXSTARTED, &_p_twim->EVENTS_ERROR, timeout_ms))
+  {
+    _p_twim->TASKS_STOP = 0x1UL;
+    wait_for_twim_event(&_p_twim->EVENTS_STOPPED, &_p_twim->EVENTS_ERROR, timeout_ms);
+    return 0;
+  }
   _p_twim->EVENTS_RXSTARTED = 0x0UL;
 
-  while(!_p_twim->EVENTS_LASTRX && !_p_twim->EVENTS_ERROR);
+  if (!wait_for_twim_event(&_p_twim->EVENTS_LASTRX, &_p_twim->EVENTS_ERROR, timeout_ms))
+  {
+    _p_twim->TASKS_STOP = 0x1UL;
+    wait_for_twim_event(&_p_twim->EVENTS_STOPPED, &_p_twim->EVENTS_ERROR, timeout_ms);
+    return 0;
+  }
   _p_twim->EVENTS_LASTRX = 0x0UL;
 
   if (stopBit || _p_twim->EVENTS_ERROR)
   {
     _p_twim->TASKS_STOP = 0x1UL;
-    while(!_p_twim->EVENTS_STOPPED);
+    if (!wait_for_twim_event(&_p_twim->EVENTS_STOPPED, &_p_twim->EVENTS_ERROR, timeout_ms))
+    {
+      return 0;
+    }
     _p_twim->EVENTS_STOPPED = 0x0UL;
   }
   else
   {
     _p_twim->TASKS_SUSPEND = 0x1UL;
-    while(!_p_twim->EVENTS_SUSPENDED);
+    if (!wait_for_twim_event(&_p_twim->EVENTS_SUSPENDED, &_p_twim->EVENTS_ERROR, timeout_ms))
+    {
+      _p_twim->TASKS_STOP = 0x1UL;
+      wait_for_twim_event(&_p_twim->EVENTS_STOPPED, &_p_twim->EVENTS_ERROR, timeout_ms);
+      return 0;
+    }
     _p_twim->EVENTS_SUSPENDED = 0x0UL;
   }
 
   if (_p_twim->EVENTS_ERROR)
   {
     _p_twim->EVENTS_ERROR = 0x0UL;
+    _p_twim->ERRORSRC = _p_twim->ERRORSRC;
   }
 
   byteRead = rxBuffer._iHead = _p_twim->RXD.AMOUNT;
-
-  // stealth30110
 
   return byteRead;
 }
