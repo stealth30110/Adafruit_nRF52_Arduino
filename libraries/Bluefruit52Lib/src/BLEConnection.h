@@ -46,6 +46,7 @@ class BLEConnection
   private:
     uint16_t _conn_hdl;
     uint16_t _mtu;
+    uint16_t _requested_mtu; // our Client Rx MTU in the last exchange we started
     uint16_t _conn_interval;
     uint16_t _slave_latency;
     uint16_t _sup_timeout;
