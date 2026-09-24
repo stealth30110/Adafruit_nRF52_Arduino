@@ -46,6 +46,7 @@ BLEConnection::BLEConnection(uint16_t conn_hdl, ble_gap_evt_connected_t const* e
   _connected = true;
 
   _mtu = BLE_GATT_ATT_MTU_DEFAULT;
+  _requested_mtu = BLE_GATT_ATT_MTU_DEFAULT;
   _data_length = BLE_GATT_ATT_MTU_DEFAULT + 4; // 27
   _phy = BLE_GAP_PHY_1MBPS;
   _conn_interval = evt_connected->conn_params.max_conn_interval;
@@ -171,6 +172,7 @@ bool BLEConnection::setTxPower(int8_t power)
 bool BLEConnection::requestMtuExchange(uint16_t mtu)
 {
   VERIFY_STATUS(sd_ble_gattc_exchange_mtu_request(_conn_hdl, mtu), false);
+  _requested_mtu = mtu;
   return true;
 }
 
@@ -357,7 +359,10 @@ void BLEConnection::_eventHandler(ble_evt_t* evt)
     break;
 
     case BLE_GATTC_EVT_EXCHANGE_MTU_RSP:
-      _mtu = evt->evt.gattc_evt.params.exchange_mtu_rsp.server_rx_mtu;
+      // The ATT MTU in force is the smaller of the two Rx MTUs, not the peer's
+      // alone: a central answering 517 to our 247 leaves 247, which is what
+      // the SoftDevice uses. The request path above already takes the min.
+      _mtu = minof(evt->evt.gattc_evt.params.exchange_mtu_rsp.server_rx_mtu, _requested_mtu);
       LOG_LV1("GAP", "ATT MTU is changed to %d", _mtu);
     break;
 
